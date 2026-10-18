@@ -1,0 +1,48 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+// command to follow
+// npx prisma generate
+// npx prisma db push
+
+// AI: convert the following into prisma code 
+
+// N5la2 migrations
+// 1- npx prisma migrate dev --name init
+// 2- npx prisma migarte reset  eza m 3nde data mn3mela 
+// 3- npx prisma migrate dev --name init (esma l migartion init)
+
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+
+enum Role {
+  patient
+  admin
+  super_admin
+
+  @@map("role")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  fullName     String   @map("full_name")
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  phoneNumber  String?   @map("phone_number")
+  role         Role     @default(patient)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  @@map("user")
+}
+
