@@ -1,18 +1,14 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
-// command to follow
-// npx prisma generate
-// npx prisma db push
-
-// AI: convert the following into prisma code 
-
-// N5la2 migrations
-// 1- npx prisma migrate dev --name init
-// 2- npx prisma migarte reset  eza m 3nde data mn3mela 
-// 3- npx prisma migrate dev --name init (esma l migartion init)
+// Prisma schema — https://pris.ly/d/prisma-schema
+//
+// Migrations workflow (use migrate OR db push, not both on the same DB):
+//   1. npx prisma migrate dev --name init     -> create + apply a migration
+//   2. npx prisma migrate reset               -> drop & recreate DB (only if there is no data to keep)
+//   3. npx prisma generate                    -> regenerate the client (migrate dev does this too)
+//
+// Data rules:
+//   - Patients and users are soft-deleted (deleted_at). Medical data is never hard-deleted:
+//     relations to health records, body composition reports and appointments use onDelete: Restrict.
+//   - Queries must filter `deletedAt: null` (ideally via a Prisma client extension).
 
 generator client {
   provider = "prisma-client"
@@ -23,6 +19,7 @@ datasource db {
   provider = "postgresql"
 }
 
+// ───────────────────────────── ENUMS ─────────────────────────────
 
 enum Role {
   patient
@@ -32,17 +29,328 @@ enum Role {
   @@map("role")
 }
 
+enum Gender {
+  male
+  female
+
+  @@map("gender")
+}
+
+enum Language {
+  en
+  ar
+
+  @@map("language")
+}
+
+enum ExtractionStatus {
+  pending
+  success
+  failed
+  reviewed
+
+  @@map("extraction_status")
+}
+
+enum AppointmentStatus {
+  pending
+  confirmed
+  completed
+  cancelled
+  rescheduled
+
+  @@map("appointment_status")
+}
+
+enum RecurrencePattern {
+  none
+  weekly
+  biweekly
+
+  @@map("recurrence_pattern")
+}
+
+enum NotificationChannel {
+  whatsapp
+  email
+
+  @@map("notification_channel")
+}
+
+enum NotificationType {
+  confirmation
+  reminder
+  cancellation
+  reschedule
+
+  @@map("notification_type")
+}
+
+enum NotificationStatus {
+  pending
+  sent
+  failed
+
+  @@map("notification_status")
+}
+
+enum ContactSubmissionStatus {
+  unread
+  read
+  replied
+  archived
+
+  @@map("contact_submission_status")
+}
+
+// ───────────────────────────── USERS & AUTH ─────────────────────────────
+
 model User {
-  id           String   @id @default(uuid())
-  username     String   @unique
-  fullName     String   @map("full_name")
-  email        String   @unique
-  passwordHash String   @map("password_hash")
-  phoneNumber  String?   @map("phone_number")
-  role         Role     @default(patient)
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamp(6)
-  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamp(6)
+  id                String    @id @default(uuid())
+  username          String    @unique
+  fullName          String    @map("full_name")
+  email             String    @unique
+  passwordHash      String    @map("password_hash")
+  phoneNumber       String?   @map("phone_number")
+  role              Role      @default(patient)
+  preferredLanguage Language  @default(en) @map("preferred_language")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamp(6)
+  deletedAt         DateTime? @map("deleted_at") @db.Timestamp(6)
+
+  patient                    Patient?
+  dietitian                  Dietitian?
+  revokedTokens              RevokedToken[]
+  updatedAppointmentSettings AppointmentSettings[] @relation("AppointmentSettingsUpdatedBy")
 
   @@map("user")
 }
 
+// Logout denylist: a token whose jti is here is rejected with 401 until it expires.
+// Purge expired rows with a cron job: deleteMany({ where: { expiresAt: { lt: new Date() } } })
+model RevokedToken {
+  jti       String   @id
+  userId    String   @map("user_id")
+  expiresAt DateTime @map("expires_at") @db.Timestamp(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("revoked_token")
+}
+
+// ───────────────────────────── PATIENTS ─────────────────────────────
+
+model Patient {
+  id                    String    @id @default(uuid())
+  userId                String    @unique @map("user_id")
+  dateOfBirth           DateTime? @map("date_of_birth") @db.Date
+  gender                Gender?
+  phone                 String?   @map("phone")
+  note                  String?   @db.Text
+  whatsappOptInAt       DateTime? @map("whatsapp_opt_in_at") @db.Timestamp(6) // NULL = no WhatsApp consent
+  aiProcessingConsentAt DateTime? @map("ai_processing_consent_at") @db.Timestamp(6) // NULL = no AI consent
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt             DateTime  @updatedAt @map("updated_at") @db.Timestamp(6)
+  deletedAt             DateTime? @map("deleted_at") @db.Timestamp(6)
+
+  user                   User                    @relation(fields: [userId], references: [id], onDelete: Restrict)
+  healthRecords          PatientHealthRecord[]
+  bodyCompositionReports BodyCompositionReport[]
+  appointments           Appointment[]
+
+  @@map("patient")
+}
+
+model Dietitian {
+  userId String @id @map("user_id")
+
+  user  User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  reviewedBodyCompositionReports BodyCompositionReport[] @relation("BodyCompositionReviewer")
+
+  @@map("dietitian")
+}
+
+model PatientHealthRecord {
+  id                String   @id @default(uuid())
+  patientId         String   @map("patient_id")
+  recordedAt        DateTime @default(now()) @map("recorded_at") @db.Timestamp(6)
+  height            Decimal  @db.Decimal(5, 2)
+  weight            Decimal  @db.Decimal(6, 2)
+  bmi               Decimal  @db.Decimal(5, 2)
+  isObese           Boolean  @map("is_obese")
+  chronicConditions Json     @default("[]") @map("chronic_conditions") @db.JsonB
+  allergies         Json     @default("[]") @db.JsonB
+  dietitianGoal     String?  @map("dietitian_goal") @db.Text
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+
+  @@index([patientId, recordedAt])
+  @@map("patient_health_record")
+}
+
+model BodyCompositionReport {
+  id                    String           @id @default(uuid())
+  patientId             String           @map("patient_id")
+  filePath              String?          @map("file_path")
+  extractionStatus      ExtractionStatus @default(pending) @map("extraction_status")
+  bodyFatPercentage     Decimal?         @map("body_fat_percentage") @db.Decimal(5, 2)
+  visceralFatLevel      Decimal?         @map("visceral_fat_level") @db.Decimal(5, 2)
+  basalMetabolicRate    Decimal?         @map("basal_metabolic_rate") @db.Decimal(8, 2)
+  muscleMass            Decimal?         @map("muscle_mass") @db.Decimal(6, 2)
+  extractionError       String?          @map("extraction_error") @db.Text
+  reviewedByDietitianId String?          @map("reviewed_by_dietitian_id")
+  reviewedAt            DateTime?        @map("reviewed_at") @db.Timestamp(6)
+  createdAt             DateTime         @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt             DateTime         @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  patient    Patient    @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  reviewedBy Dietitian? @relation("BodyCompositionReviewer", fields: [reviewedByDietitianId], references: [userId], onDelete: SetNull)
+
+  @@index([patientId])
+  @@index([reviewedByDietitianId])
+  @@map("body_composition_report")
+}
+
+// ───────────────────────────── APPOINTMENTS ─────────────────────────────
+
+model AppointmentSettings {
+  id                  Int      @id @default(1)
+  appointmentDuration Int      @default(60) @map("appointment_duration") // minutes, 5–240 (validated by the API)
+  bufferTime          Int      @default(15) @map("buffer_time") // minutes, 0–120 (validated by the API)
+  updatedBy           String?  @map("updated_by")
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  updatedByUser User? @relation("AppointmentSettingsUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+
+  @@map("appointment_settings")
+}
+
+// A slot is booked when an appointment points to it (appointment.slot_id is unique).
+// Cancelling or rescheduling sets the old appointment's slot_id to NULL, which releases the slot.
+model AppointmentSlot {
+  id        String   @id @default(uuid())
+  date      DateTime @db.Date
+  startTime DateTime @map("start_time") @db.Time(6)
+  endTime   DateTime @map("end_time") @db.Time(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  appointment Appointment?
+
+  @@unique([date, startTime])
+  @@map("appointment_slot")
+}
+
+model Appointment {
+  id                  String            @id @default(uuid())
+  patientId           String            @map("patient_id")
+  slotId              String?           @unique @map("slot_id")
+  appointmentDate     DateTime          @map("appointment_date") @db.Date
+  startTime           DateTime          @map("start_time") @db.Time(6)
+  endTime             DateTime          @map("end_time") @db.Time(6)
+  status              AppointmentStatus @default(pending)
+  isRecurring         Boolean           @default(false) @map("is_recurring")
+  recurrencePattern   RecurrencePattern @default(none) @map("recurrence_pattern")
+  parentAppointmentId String?           @map("parent_appointment_id")
+  cancellationReason  String?           @map("cancellation_reason") @db.Text
+  createdAt           DateTime          @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt           DateTime          @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  patient           Patient                   @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  slot              AppointmentSlot?          @relation(fields: [slotId], references: [id], onDelete: Restrict)
+  parentAppointment Appointment?              @relation("AppointmentRecurrence", fields: [parentAppointmentId], references: [id], onDelete: SetNull)
+  childAppointments Appointment[]             @relation("AppointmentRecurrence")
+  notifications     AppointmentNotification[]
+
+  @@index([patientId])
+  @@index([appointmentDate, startTime])
+  @@index([parentAppointmentId])
+  @@map("appointment")
+}
+
+model AppointmentNotification {
+  id               String              @id @default(uuid())
+  appointmentId    String              @map("appointment_id")
+  channel          NotificationChannel
+  notificationType NotificationType    @map("notification_type")
+  scheduledAt      DateTime?           @map("scheduled_at") @db.Timestamp(6)
+  sentAt           DateTime?           @map("sent_at") @db.Timestamp(6)
+  status           NotificationStatus  @default(pending)
+  errorMessage     String?             @map("error_message") @db.Text
+  createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamp(6)
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  @@index([appointmentId])
+  @@index([status, scheduledAt])
+  @@map("appointment_notification")
+}
+
+// ───────────────────────────── CONTACT & CONTENT ─────────────────────────────
+
+model ContactSubmission {
+  id          String                  @id @default(uuid())
+  fullName    String                  @map("full_name")
+  email       String
+  phone       String?
+  subject     String?
+  message     String                  @db.Text
+  status      ContactSubmissionStatus @default(unread)
+  submittedAt DateTime                @default(now()) @map("submitted_at") @db.Timestamp(6)
+  updatedAt   DateTime?               @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  @@index([status])
+  @@map("contact_submission")
+}
+
+model Page {
+  id        String    @id @default(uuid())
+  slug      String
+  title     String
+  language  Language
+  updatedAt DateTime? @updatedAt @map("updated_at") @db.Timestamp(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamp(6)
+
+  sections PageSection[]
+
+  @@unique([slug, language])
+  @@map("page")
+}
+
+model PageSection {
+  id           String  @id @default(uuid())
+  pageId       String  @map("page_id")
+  sectionKey   String? @map("section_key")
+  content      Json?   @db.JsonB
+  displayOrder Int?    @map("display_order")
+
+  page       Page        @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  healthTips HealthTip[]
+
+  @@unique([pageId, sectionKey])
+  @@index([pageId, displayOrder])
+  @@map("page_section")
+}
+
+model HealthTip {
+  id          String    @id @default(uuid())
+  sectionId   String?   @map("section_id")
+  title       String
+  content     String    @db.Text
+  language    Language
+  isPublished Boolean   @default(false) @map("is_published")
+  publishedAt DateTime? @map("published_at") @db.Timestamp(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  section PageSection? @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+
+  @@index([sectionId])
+  @@index([language, isPublished])
+  @@map("health_tip")
+}
