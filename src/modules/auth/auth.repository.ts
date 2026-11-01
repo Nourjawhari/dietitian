@@ -54,6 +54,18 @@ export class AuthRepository {
     });
   }
 
+  /** Active (non-deleted) user by id — used to resolve the caller behind a bearer token. */
+  static async findActiveById(id: string): Promise<UserWithPasswordHash | null> {
+    return prisma.user.findFirst({
+      where: { id, deletedAt: null },
+      select: USER_SELECT,
+    });
+  }
+
+  static async isRevoked(jti: string): Promise<boolean> {
+    return (await prisma.revokedToken.findUnique({ where: { jti } })) !== null;
+  }
+
   /** Denylists a token's jti until it would have expired anyway. Idempotent: ignores an already-revoked jti. */
   static async revokeToken(jti: string, userId: string, expiresAt: Date): Promise<void> {
     try {

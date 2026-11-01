@@ -44,4 +44,23 @@ export class AuthService {
     }
     await AuthRepository.revokeToken(payload.jti, payload.sub, new Date(payload.exp * 1000));
   }
+
+  /** Resolves the caller behind a bearer token: verifies it, checks the denylist, and loads the user. */
+  async authenticate(accessToken: string): Promise<SafeUser> {
+    let payload;
+    try {
+      payload = await verifyAccessToken(accessToken);
+    } catch {
+      throw new UnauthorizedError();
+    }
+
+    if (await AuthRepository.isRevoked(payload.jti)) {
+      throw new UnauthorizedError();
+    }
+
+    const user = await AuthRepository.findActiveById(payload.sub);
+    if (!user) throw new UnauthorizedError();
+
+    return toSafeUser(user);
+  }
 }
