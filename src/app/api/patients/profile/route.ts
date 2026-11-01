@@ -1,23 +1,10 @@
 import { NextRequest } from "next/server";
-import { Role } from "@/app/generated/prisma/enums";
 import { NextResponseHandler } from "@/lib/http/response-handler";
-import { getBearerToken } from "@/lib/http/request";
 import { serializePatient } from "@/lib/http/serializers";
-import { ForbiddenError, UnauthorizedError } from "@/lib/errors";
-import { AuthService } from "@/modules/auth";
 import { PatientService, PatientSelfUpdateSchema } from "@/modules/patient";
+import { requirePatient } from "@/lib/utils";
 
 const response = new NextResponseHandler();
-
-async function requirePatient(request: NextRequest) {
-  const token = getBearerToken(request);
-  if (!token) throw new UnauthorizedError();
-
-  const user = await new AuthService().authenticate(token);
-  if (user.role !== Role.patient) throw new ForbiddenError("This endpoint is only available to patients.");
-
-  return user.id;
-}
 
 export async function GET(request: NextRequest) {
   try {
