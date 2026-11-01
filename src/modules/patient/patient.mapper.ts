@@ -20,7 +20,7 @@ export function toSafePatient(patient: PatientRecord): SafePatient {
   };
 }
 
-function toSafeHealthRecord(record: HealthRecordRecord): SafeHealthRecord {
+export function toSafeHealthRecord(record: HealthRecordRecord): SafeHealthRecord {
   return {
     id: record.id,
     patientId: record.patientId,

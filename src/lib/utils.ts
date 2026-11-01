@@ -13,3 +13,15 @@ export async function requirePatient(request: NextRequest) {
 
   return user.id;
 }
+
+export async function requireAdmin(request: NextRequest) {
+  const token = getBearerToken(request);
+  if (!token) throw new UnauthorizedError();
+
+  const user = await new AuthService().authenticate(token);
+  if (user.role !== Role.admin && user.role !== Role.super_admin) {
+    throw new ForbiddenError("This endpoint is only available to administrators.");
+  }
+
+  return user.id;
+}

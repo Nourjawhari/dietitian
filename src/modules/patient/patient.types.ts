@@ -28,6 +28,50 @@ export const PatientSelfUpdateSchema = z
 
 export type PatientSelfUpdateInput = z.infer<typeof PatientSelfUpdateSchema>;
 
+export const HealthRecordCreateSchema = z
+  .object({
+    recorded_at: z.iso.datetime().optional(),
+    height: z.number().min(50).max(250),
+    weight: z.number().min(2).max(400),
+    chronic_conditions: z.array(z.string().max(100)).default([]),
+    allergies: z.array(z.string().max(100)).default([]),
+    dietitian_goal: z.string().max(2000).optional(),
+  })
+  .transform((data) => ({
+    recordedAt: data.recorded_at ? new Date(data.recorded_at) : undefined,
+    height: data.height,
+    weight: data.weight,
+    chronicConditions: data.chronic_conditions,
+    allergies: data.allergies,
+    dietitianGoal: data.dietitian_goal,
+  }));
+
+export type HealthRecordCreateInput = z.infer<typeof HealthRecordCreateSchema>;
+
+export const HealthRecordUpdateSchema = z
+  .object({
+    recorded_at: z.iso.datetime(),
+    height: z.number().min(50).max(250),
+    weight: z.number().min(2).max(400),
+    chronic_conditions: z.array(z.string().max(100)),
+    allergies: z.array(z.string().max(100)),
+    dietitian_goal: z.string().max(2000),
+  })
+  .partial()
+  .refine((data) => Object.values(data).some((value) => value !== undefined), {
+    message: "At least one field is required.",
+  })
+  .transform((data) => ({
+    recordedAt: data.recorded_at ? new Date(data.recorded_at) : undefined,
+    height: data.height,
+    weight: data.weight,
+    chronicConditions: data.chronic_conditions,
+    allergies: data.allergies,
+    dietitianGoal: data.dietitian_goal,
+  }));
+
+export type HealthRecordUpdateInput = z.infer<typeof HealthRecordUpdateSchema>;
+
 /** Raw shape the mapper needs — independent of the repository's exact Prisma select. */
 export type HealthRecordRecord = {
   id: string;
