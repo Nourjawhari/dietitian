@@ -9,9 +9,8 @@
  */
 import "dotenv/config";
 import bcrypt from "bcryptjs";
-import { PrismaPg } from "@prisma/adapter-pg";
+import db from "@/lib/db"
 import {
-  PrismaClient,
   AppointmentStatus,
   ContactSubmissionStatus,
   ExtractionStatus,
@@ -33,9 +32,7 @@ if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL is not set.");
 }
 
-const prisma = new PrismaClient({
-  adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }),
-});
+const prisma = db
 
 // ───────────────────────────── DATE HELPERS ─────────────────────────────
 // All dates are relative to today, so the data stays realistic whenever the seed runs.
@@ -144,7 +141,6 @@ async function reset() {
 async function seedStaff(passwordHash: string) {
   const superAdmin = await prisma.user.create({
     data: {
-      username: "superadmin",
       fullName: "System Owner",
       email: "superadmin@dietitian.test",
       passwordHash,
@@ -157,7 +153,6 @@ async function seedStaff(passwordHash: string) {
   // The administrator is the dietitian, so the account also gets a dietitian row.
   const dietitian = await prisma.user.create({
     data: {
-      username: "dr.rania",
       fullName: "Rania Haddad",
       email: "admin@dietitian.test",
       passwordHash,
@@ -314,7 +309,6 @@ async function seedPatients(passwordHash: string) {
 
     const user = await prisma.user.create({
       data: {
-        username: p.username,
         fullName: p.fullName,
         email: p.email,
         passwordHash,

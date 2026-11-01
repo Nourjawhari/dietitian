@@ -1,0 +1,2888 @@
+openapi: 3.0.3
+
+info:
+  title: Dietitian Booking System API
+  version: 1.1.0
+  description: |
+    API for the dietitian website, patient booking, health records, and administration.
+
+    Conventions:
+    - All IDs are opaque strings (`varchar` in the database).
+    - Dates use `YYYY-MM-DD`; times use 24-hour `HH:mm` in the clinic's local timezone.
+    - Timestamps are ISO 8601 date-times in UTC.
+    - List endpoints are paginated with `page` / `page_size` and return a `pagination` object.
+    - Errors always return the `Error` schema.
+
+servers:
+  - url: /api
+
+tags:
+  - name: Public
+    description: Unauthenticated website content and slot availability (bilingual en/ar).
+  - name: Authentication
+    description: Patient registration, login and logout for patients and the administrator (JWT bearer tokens).
+  - name: Patients
+    description: The signed-in patient's own profile and consent settings.
+  - name: Appointments
+    description: Booking, cancelling, rescheduling and listing the signed-in patient's own appointments, including history.
+  - name: Health Records
+    description: Patient health intake (self-service) and dietitian-managed health records.
+  - name: Body Composition
+    description: Upload of body composition reports, AI-based metric extraction, and dietitian review/confirmation.
+  - name: Admin
+    description: Administrator-only management of patients, appointments, appointment slots and appointment settings.
+  - name: Pages
+    description: Administrator management of website pages and their sections (content editable without code changes).
+  - name: Health Tips
+    description: Health tips shown on the website — public read and administrator management.
+  - name: Contact
+    description: Public consultation/contact form and administrator handling of submissions.
+  - name: Notifications
+    description: Administrator view of appointment notifications (confirmations and reminders via WhatsApp with email fallback).
+  - name: Reports
+    description: Administrator export of appointment and patient reports as CSV or PDF.
+  - name: Statistics
+    description: Administrator dashboard figures — booked clients, chronic-condition and obesity counts/percentages.
+
+paths:
+  # ───────────────────────────── PUBLIC ─────────────────────────────
+
+  /pages:
+    get:
+      tags: [Public]
+      summary: Get public website pages
+      description: Returns the published pages (Home, Services, Why Choose Me, How It Works, Contact) with their sections.
+      parameters:
+        - $ref: '#/components/parameters/LanguageQuery'
+      responses:
+        '200':
+          description: Pages retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Page'
+
+  /pages/{slug}:
+    get:
+      tags: [Public]
+      summary: Get a public page by slug
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/LanguageQuery'
+      responses:
+        '200':
+          description: Page retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Page'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /health-tips:
+    get:
+      tags: [Public]
+      summary: Get published health tips
+      parameters:
+        - $ref: '#/components/parameters/LanguageQuery'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Published health tips retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthTipList'
+
+  /appointment-slots:
+    get:
+      tags: [Public]
+      summary: Get available appointment slots
+      description: Returns only slots on the given date that are not booked and not in the past.
+      parameters:
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Available appointment slots
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AvailableSlot'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /contact:
+    post:
+      tags: [Contact]
+      summary: Submit consultation/contact form
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContactSubmissionCreateRequest'
+      responses:
+        '201':
+          description: Contact submission created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactSubmission'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  # ───────────────────────────── AUTHENTICATION ─────────────────────────────
+
+  /auth/register:
+    post:
+      tags: [Authentication]
+      summary: Register a patient account
+      description: Creates a `user` with role `patient` and its linked `patient` row. Required before booking.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Patient registered and signed in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Email already in use
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/login:
+    post:
+      tags: [Authentication]
+      summary: Login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Logout
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Logout successful; the token is revoked
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ───────────────────────────── PATIENT ─────────────────────────────
+
+  /patients/profile:
+    get:
+      tags: [Patients]
+      summary: Get current patient profile
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Patient profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Patient'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    put:
+      tags: [Patients]
+      summary: Update current patient profile
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatientSelfUpdateRequest'
+      responses:
+        '200':
+          description: Profile updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Patient'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /patients/health-record:
+    get:
+      tags: [Health Records]
+      summary: Get current patient's latest health record
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Health record retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: The patient has not completed the health intake yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags: [Health Records]
+      summary: Submit health intake information
+      description: Completed by the patient when booking their first appointment. `bmi` and `is_obese` are computed by the server.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HealthRecordCreateRequest'
+      responses:
+        '201':
+          description: Health record created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ───────────────────────────── APPOINTMENTS - PATIENT ─────────────────────────────
+
+  /appointments:
+    post:
+      tags: [Appointments]
+      summary: Book an appointment
+      description: |
+        Books one appointment, or a recurring series when `is_recurring` is true.
+        For a recurring series the first appointment is the parent and later ones reference it via `parent_appointment_id`.
+        A confirmation notification is queued on success.
+        Returns 422 if this is the patient's first booking and the health intake has not been submitted.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppointmentCreateRequest'
+      responses:
+        '201':
+          description: Appointment(s) booked successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentBookingResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Appointment slot unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: Health intake must be completed before the first booking
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      tags: [Appointments]
+      summary: Get current patient's appointments (including history)
+      description: Use `timeframe=past` for appointment history (past dates, times and status).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AppointmentStatusQuery'
+        - name: timeframe
+          in: query
+          description: '`upcoming` = today onward, `past` = appointment history, `all` = both.'
+          schema:
+            type: string
+            enum: [upcoming, past, all]
+            default: all
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Appointments retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /appointments/{appointmentId}:
+    get:
+      tags: [Appointments]
+      summary: Get appointment details
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AppointmentId'
+      responses:
+        '200':
+          description: Appointment details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Appointment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /appointments/{appointmentId}/cancel:
+    post:
+      tags: [Appointments]
+      summary: Cancel an appointment
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AppointmentId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppointmentCancelRequest'
+      responses:
+        '200':
+          description: Appointment cancelled successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Appointment'
+        '400':
+          description: Cancellation must be requested at least 24 hours before appointment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Appointment is already cancelled or completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /appointments/{appointmentId}/reschedule:
+    post:
+      tags: [Appointments]
+      summary: Reschedule an appointment
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AppointmentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppointmentRescheduleRequest'
+      responses:
+        '200':
+          description: Appointment rescheduled successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Appointment'
+        '400':
+          description: Reschedule must be requested at least 24 hours before appointment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Requested slot unavailable, or appointment is already cancelled or completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ───────────────────────────── ADMIN - PATIENTS ─────────────────────────────
+
+  /admin/patients:
+    get:
+      tags: [Admin]
+      summary: Search and list patients
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: search
+          in: query
+          description: Matches full name, email or phone (case-insensitive, partial).
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Patients retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatientList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    post:
+      tags: [Admin]
+      summary: Create patient
+      description: |
+        Creates the `user` (role `patient`) and `patient` rows, optionally with an initial health record.
+        The patient receives an email link to set their password.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatientCreateRequest'
+      responses:
+        '201':
+          description: Patient created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Patient'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Email already in use
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/patients/{patientId}:
+    get:
+      tags: [Admin]
+      summary: Get patient details
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      responses:
+        '200':
+          description: Patient details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Patient'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Admin]
+      summary: Update patient
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatientUpdateRequest'
+      responses:
+        '200':
+          description: Patient updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Patient'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Email already in use
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags: [Admin]
+      summary: Delete patient
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      responses:
+        '204':
+          description: Patient deleted successfully
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/patients/{patientId}/history:
+    get:
+      tags: [Admin]
+      summary: Get patient appointment and health history
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      responses:
+        '200':
+          description: Patient history retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatientHistory'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ───────────────────────────── ADMIN - HEALTH RECORDS ─────────────────────────────
+
+  /admin/patients/{patientId}/health-records:
+    get:
+      tags: [Health Records]
+      summary: Get patient health records
+      description: Returns all records for the patient, newest `recorded_at` first.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      responses:
+        '200':
+          description: Health records retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/HealthRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    post:
+      tags: [Health Records]
+      summary: Add patient health record
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HealthRecordCreateRequest'
+      responses:
+        '201':
+          description: Health record created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/patients/{patientId}/health-records/{recordId}:
+    put:
+      tags: [Health Records]
+      summary: Update patient health record
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+        - name: recordId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HealthRecordUpdateRequest'
+      responses:
+        '200':
+          description: Health record updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ───────────────────────────── BODY COMPOSITION REPORT ─────────────────────────────
+
+  /admin/patients/{patientId}/body-composition-reports:
+    post:
+      tags: [Body Composition]
+      summary: Upload body composition report
+      description: |
+        Stores the file and starts asynchronous AI extraction (status `pending`).
+        Patient-identifying information is masked before the file is sent to the external AI service.
+        Poll `GET /admin/body-composition-reports/{reportId}` until `extraction_status` is `success` or `failed`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: PDF, JPEG or PNG, max 10 MB.
+            encoding:
+              file:
+                contentType: application/pdf, image/jpeg, image/png
+      responses:
+        '202':
+          description: Report uploaded and extraction started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BodyCompositionReport'
+        '400':
+          description: Invalid or unreadable file
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Not an administrator, or the patient has not consented to AI processing of health reports
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          description: File exceeds the maximum size
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '415':
+          description: Unsupported file type
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Extraction service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      tags: [Body Composition]
+      summary: Get patient's body composition reports
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      responses:
+        '200':
+          description: Reports retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BodyCompositionReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/body-composition-reports/{reportId}:
+    get:
+      tags: [Body Composition]
+      summary: Get body composition report
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportId'
+      responses:
+        '200':
+          description: Report retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BodyCompositionReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/body-composition-reports/{reportId}/review:
+    post:
+      tags: [Body Composition]
+      summary: Review and confirm extracted values
+      description: |
+        The dietitian corrects and confirms the metrics. Sets `extraction_status` to `reviewed`,
+        `reviewed_by_dietitian` to true, and records `reviewed_by_user_id` / `reviewed_at`.
+        Also allowed when extraction `failed`, so values can be entered manually.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BodyCompositionReviewRequest'
+      responses:
+        '200':
+          description: Extracted values reviewed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BodyCompositionReport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Extraction is still pending, or the report was already reviewed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ───────────────────────────── ADMIN - APPOINTMENTS ─────────────────────────────
+
+  /admin/appointments:
+    get:
+      tags: [Admin]
+      summary: List and manage appointments
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: date
+          in: query
+          description: Exact date. Ignored when `from` or `to` is supplied.
+          schema:
+            type: string
+            format: date
+        - $ref: '#/components/parameters/FromDate'
+        - $ref: '#/components/parameters/ToDate'
+        - $ref: '#/components/parameters/AppointmentStatusQuery'
+        - name: patient_id
+          in: query
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Appointments retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/appointments/follow-up:
+    post:
+      tags: [Admin]
+      summary: Schedule follow-up appointment for existing patient
+      description: Created directly as `confirmed`; the patient's details are taken from the existing record.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FollowUpCreateRequest'
+      responses:
+        '201':
+          description: Follow-up appointment(s) created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentBookingResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Patient not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Appointment slot unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/appointments/{appointmentId}/approve:
+    post:
+      tags: [Admin]
+      summary: Approve appointment
+      description: Moves a `pending` appointment to `confirmed` and queues a confirmation notification.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AppointmentId'
+      responses:
+        '200':
+          description: Appointment approved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Appointment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Appointment is not pending
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/appointments/{appointmentId}/reschedule:
+    post:
+      tags: [Admin]
+      summary: Reschedule appointment
+      description: Not subject to the 24-hour rule that applies to patients.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AppointmentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppointmentRescheduleRequest'
+      responses:
+        '200':
+          description: Appointment rescheduled successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Appointment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Requested slot unavailable, or appointment is already cancelled or completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/appointments/{appointmentId}/cancel:
+    post:
+      tags: [Admin]
+      summary: Cancel appointment
+      description: Not subject to the 24-hour rule that applies to patients.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AppointmentId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppointmentCancelRequest'
+      responses:
+        '200':
+          description: Appointment cancelled successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Appointment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Appointment is already cancelled or completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ───────────────────────────── ADMIN - APPOINTMENT SLOTS ─────────────────────────────
+
+  /admin/appointment-slots:
+    get:
+      tags: [Admin]
+      summary: List appointment slots
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: date
+          in: query
+          description: Exact date. Ignored when `from` or `to` is supplied.
+          schema:
+            type: string
+            format: date
+        - $ref: '#/components/parameters/FromDate'
+        - $ref: '#/components/parameters/ToDate'
+        - name: is_booked
+          in: query
+          schema:
+            type: boolean
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Appointment slots retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentSlotList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    post:
+      tags: [Admin]
+      summary: Create appointment slot
+      description: |
+        If `end_time` is omitted it is derived from `start_time` + the configured `appointment_duration`.
+        Rejected if it overlaps an existing slot including the configured `buffer_time`.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppointmentSlotCreateRequest'
+      responses:
+        '201':
+          description: Appointment slot created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentSlot'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Slot overlaps an existing slot or its buffer time
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/appointment-slots/{slotId}:
+    put:
+      tags: [Admin]
+      summary: Update appointment slot
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SlotId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppointmentSlotUpdateRequest'
+      responses:
+        '200':
+          description: Appointment slot updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentSlot'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Slot is booked, or the new time overlaps another slot or its buffer time
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags: [Admin]
+      summary: Delete appointment slot
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SlotId'
+      responses:
+        '204':
+          description: Appointment slot deleted successfully
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Slot has an active booking; cancel or reschedule it first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/appointment-settings:
+    get:
+      tags: [Admin]
+      summary: Get appointment duration and buffer settings
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Appointment settings retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentSettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    put:
+      tags: [Admin]
+      summary: Update appointment duration and buffer time
+      description: Applies to slots created afterwards; existing slots are unchanged.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppointmentSettings'
+      responses:
+        '200':
+          description: Appointment settings updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ───────────────────────────── ADMIN - DASHBOARD / STATISTICS ─────────────────────────────
+
+  /admin/statistics/dashboard:
+    get:
+      tags: [Statistics]
+      summary: Get dashboard statistics
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Dashboard statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardStatistics'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ───────────────────────────── ADMIN - CONTENT ─────────────────────────────
+
+  /admin/pages:
+    get:
+      tags: [Pages]
+      summary: List website pages
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/LanguageQuery'
+      responses:
+        '200':
+          description: Pages retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Page'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/pages/{pageId}:
+    get:
+      tags: [Pages]
+      summary: Get page
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PageId'
+      responses:
+        '200':
+          description: Page retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Page'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Pages]
+      summary: Update page
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PageId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PageUpdateRequest'
+      responses:
+        '200':
+          description: Page updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Page'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Another page already uses this slug in the same language
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/pages/{pageId}/sections:
+    post:
+      tags: [Pages]
+      summary: Add page section
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PageId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PageSectionCreateRequest'
+      responses:
+        '201':
+          description: Section created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PageSection'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: A section with this `section_key` already exists on the page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/pages/{pageId}/sections/{sectionId}:
+    put:
+      tags: [Pages]
+      summary: Update page section
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PageId'
+        - $ref: '#/components/parameters/SectionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PageSectionUpdateRequest'
+      responses:
+        '200':
+          description: Section updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PageSection'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Pages]
+      summary: Delete page section
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PageId'
+        - $ref: '#/components/parameters/SectionId'
+      responses:
+        '204':
+          description: Section deleted successfully
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/health-tips:
+    get:
+      tags: [Health Tips]
+      summary: List health tips
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/LanguageQuery'
+        - name: is_published
+          in: query
+          schema:
+            type: boolean
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Health tips retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthTipList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    post:
+      tags: [Health Tips]
+      summary: Add health tip
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HealthTipCreateRequest'
+      responses:
+        '201':
+          description: Health tip created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthTip'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/health-tips/{tipId}:
+    put:
+      tags: [Health Tips]
+      summary: Update health tip
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TipId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HealthTipUpdateRequest'
+      responses:
+        '200':
+          description: Health tip updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthTip'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Health Tips]
+      summary: Delete health tip
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TipId'
+      responses:
+        '204':
+          description: Health tip deleted successfully
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ───────────────────────────── ADMIN - CONTACT SUBMISSIONS ─────────────────────────────
+
+  /admin/contact-submissions:
+    get:
+      tags: [Contact]
+      summary: List contact submissions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/ContactSubmissionStatus'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Contact submissions retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactSubmissionList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/contact-submissions/{submissionId}:
+    get:
+      tags: [Contact]
+      summary: Get contact submission
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SubmissionId'
+      responses:
+        '200':
+          description: Contact submission retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactSubmission'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Contact]
+      summary: Update contact submission status
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SubmissionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContactSubmissionStatusUpdateRequest'
+      responses:
+        '200':
+          description: Contact submission updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactSubmission'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ───────────────────────────── NOTIFICATIONS ─────────────────────────────
+
+  /admin/notifications:
+    get:
+      tags: [Notifications]
+      summary: View appointment notifications
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, sent, failed]
+        - name: channel
+          in: query
+          schema:
+            type: string
+            enum: [whatsapp, email]
+        - name: notification_type
+          in: query
+          schema:
+            type: string
+            enum: [confirmation, reminder, cancellation, reschedule]
+        - name: appointment_id
+          in: query
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Notifications retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ───────────────────────────── REPORTS ─────────────────────────────
+
+  /admin/reports/appointments:
+    get:
+      tags: [Reports]
+      summary: Export appointment report
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportFormat'
+        - $ref: '#/components/parameters/FromDate'
+        - $ref: '#/components/parameters/ToDate'
+        - $ref: '#/components/parameters/AppointmentStatusQuery'
+      responses:
+        '200':
+          $ref: '#/components/responses/ReportFile'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/reports/patients:
+    get:
+      tags: [Reports]
+      summary: Export patient report
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportFormat'
+      responses:
+        '200':
+          $ref: '#/components/responses/ReportFile'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  # ───────────────────────────── PARAMETERS ─────────────────────────────
+
+  parameters:
+    LanguageQuery:
+      name: language
+      in: query
+      schema:
+        $ref: '#/components/schemas/Language'
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: page_size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    FromDate:
+      name: from
+      in: query
+      description: Inclusive start date.
+      schema:
+        type: string
+        format: date
+    ToDate:
+      name: to
+      in: query
+      description: Inclusive end date. Must not be before `from`.
+      schema:
+        type: string
+        format: date
+    AppointmentStatusQuery:
+      name: status
+      in: query
+      schema:
+        $ref: '#/components/schemas/AppointmentStatus'
+    ReportFormat:
+      name: format
+      in: query
+      required: true
+      schema:
+        type: string
+        enum: [csv, pdf]
+    PatientId:
+      name: patientId
+      in: path
+      required: true
+      schema:
+        type: string
+    AppointmentId:
+      name: appointmentId
+      in: path
+      required: true
+      schema:
+        type: string
+    ReportId:
+      name: reportId
+      in: path
+      required: true
+      schema:
+        type: string
+    SlotId:
+      name: slotId
+      in: path
+      required: true
+      schema:
+        type: string
+    PageId:
+      name: pageId
+      in: path
+      required: true
+      schema:
+        type: string
+    SectionId:
+      name: sectionId
+      in: path
+      required: true
+      schema:
+        type: string
+    TipId:
+      name: tipId
+      in: path
+      required: true
+      schema:
+        type: string
+    SubmissionId:
+      name: submissionId
+      in: path
+      required: true
+      schema:
+        type: string
+
+  # ───────────────────────────── RESPONSES ─────────────────────────────
+
+  responses:
+    BadRequest:
+      description: Invalid request data
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing, invalid or expired bearer token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Authenticated user does not have the required role or does not own the resource
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ReportFile:
+      description: Report exported successfully
+      headers:
+        Content-Disposition:
+          schema:
+            type: string
+            example: attachment; filename="appointments-2026-10-01_2026-10-31.csv"
+      content:
+        text/csv:
+          schema:
+            type: string
+            format: binary
+        application/pdf:
+          schema:
+            type: string
+            format: binary
+
+  # ───────────────────────────── SCHEMAS ─────────────────────────────
+
+  schemas:
+
+    # Shared
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: SLOT_UNAVAILABLE
+        message:
+          type: string
+          example: The selected time slot is no longer available.
+        details:
+          type: array
+          description: Field-level validation errors.
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+
+    Pagination:
+      type: object
+      required: [page, page_size, total_items, total_pages]
+      properties:
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total_items:
+          type: integer
+        total_pages:
+          type: integer
+
+    Language:
+      type: string
+      enum: [en, ar]
+
+    Time:
+      type: string
+      pattern: '^([01]\d|2[0-3]):[0-5]\d$'
+      example: '10:00'
+
+    Gender:
+      type: string
+      enum: [male, female]
+
+    # Auth
+
+    RegisterRequest:
+      type: object
+      required: [full_name, email, password, phone]
+      properties:
+        full_name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          minLength: 8
+        phone:
+          type: string
+          description: E.164 format.
+          example: '+96170123456'
+        whatsapp_opt_in:
+          type: boolean
+          default: false
+        preferred_language:
+          $ref: '#/components/schemas/Language'
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    AuthResponse:
+      type: object
+      required: [access_token, token_type, expires_in, user]
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          description: Seconds until the token expires.
+        user:
+          $ref: '#/components/schemas/User'
+
+    User:
+      type: object
+      required: [id, full_name, email, role]
+      properties:
+        id:
+          type: string
+          readOnly: true
+        full_name:
+          type: string
+        email:
+          type: string
+          format: email
+        phone_number:
+          type: string
+        role:
+          type: string
+          enum: [patient, admin, super_admin]
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    # Patients
+
+    Patient:
+      type: object
+      description: Patient profile; `full_name` and `email` come from the linked `user` row.
+      required: [id, user_id, full_name, email]
+      properties:
+        id:
+          type: string
+          readOnly: true
+        user_id:
+          type: string
+          readOnly: true
+        full_name:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        date_of_birth:
+          type: string
+          format: date
+        gender:
+          $ref: '#/components/schemas/Gender'
+        note:
+          type: string
+        whatsapp_opt_in:
+          type: boolean
+          description: Patient consent to receive appointment reminders via WhatsApp.
+        whatsapp_opt_in_at:
+          type: string
+          format: date-time
+          nullable: true
+          readOnly: true
+        ai_processing_consent:
+          type: boolean
+          description: Patient consent to send (de-identified) health reports to the external AI service.
+        ai_processing_consent_at:
+          type: string
+          format: date-time
+          nullable: true
+          readOnly: true
+        latest_health_record:
+          allOf:
+            - $ref: '#/components/schemas/HealthRecord'
+          nullable: true
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    PatientSelfUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        full_name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        phone:
+          type: string
+        date_of_birth:
+          type: string
+          format: date
+        gender:
+          $ref: '#/components/schemas/Gender'
+        note:
+          type: string
+          maxLength: 2000
+        whatsapp_opt_in:
+          type: boolean
+        ai_processing_consent:
+          type: boolean
+
+    PatientCreateRequest:
+      type: object
+      required: [full_name, email, phone]
+      properties:
+        full_name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        date_of_birth:
+          type: string
+          format: date
+        gender:
+          $ref: '#/components/schemas/Gender'
+        note:
+          type: string
+          maxLength: 2000
+        whatsapp_opt_in:
+          type: boolean
+          default: false
+        ai_processing_consent:
+          type: boolean
+          default: false
+        health_record:
+          $ref: '#/components/schemas/HealthRecordCreateRequest'
+
+    PatientUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        full_name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        date_of_birth:
+          type: string
+          format: date
+        gender:
+          $ref: '#/components/schemas/Gender'
+        note:
+          type: string
+          maxLength: 2000
+        whatsapp_opt_in:
+          type: boolean
+        ai_processing_consent:
+          type: boolean
+
+    PatientList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Patient'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    PatientHistory:
+      type: object
+      required: [patient, appointments, health_records, body_composition_reports]
+      properties:
+        patient:
+          $ref: '#/components/schemas/Patient'
+        appointments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Appointment'
+        health_records:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthRecord'
+        body_composition_reports:
+          type: array
+          items:
+            $ref: '#/components/schemas/BodyCompositionReport'
+
+    # Health records
+
+    HealthRecord:
+      type: object
+      required: [id, patient_id, recorded_at, height, weight]
+      properties:
+        id:
+          type: string
+          readOnly: true
+        patient_id:
+          type: string
+          readOnly: true
+        recorded_at:
+          type: string
+          format: date-time
+        height:
+          type: number
+          description: Centimetres.
+        weight:
+          type: number
+          description: Kilograms.
+        bmi:
+          type: number
+          readOnly: true
+          description: weight / (height in m)². Computed by the server.
+        is_obese:
+          type: boolean
+          readOnly: true
+          description: True when `bmi` >= 30. Computed by the server.
+        chronic_conditions:
+          type: array
+          items:
+            type: string
+        allergies:
+          type: array
+          items:
+            type: string
+        dietitian_goal:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    HealthRecordCreateRequest:
+      type: object
+      required: [height, weight]
+      properties:
+        recorded_at:
+          type: string
+          format: date-time
+          description: Defaults to now.
+        height:
+          type: number
+          minimum: 50
+          maximum: 250
+          description: Centimetres.
+        weight:
+          type: number
+          minimum: 2
+          maximum: 400
+          description: Kilograms.
+        chronic_conditions:
+          type: array
+          items:
+            type: string
+            maxLength: 100
+          default: []
+        allergies:
+          type: array
+          items:
+            type: string
+            maxLength: 100
+          default: []
+        dietitian_goal:
+          type: string
+          maxLength: 2000
+
+    HealthRecordUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        recorded_at:
+          type: string
+          format: date-time
+        height:
+          type: number
+          minimum: 50
+          maximum: 250
+        weight:
+          type: number
+          minimum: 2
+          maximum: 400
+        chronic_conditions:
+          type: array
+          items:
+            type: string
+            maxLength: 100
+        allergies:
+          type: array
+          items:
+            type: string
+            maxLength: 100
+        dietitian_goal:
+          type: string
+          maxLength: 2000
+
+    # Body composition
+
+    BodyCompositionReport:
+      type: object
+      required: [id, patient_id, extraction_status, reviewed_by_dietitian]
+      properties:
+        id:
+          type: string
+          readOnly: true
+        patient_id:
+          type: string
+          readOnly: true
+        file_url:
+          type: string
+          format: uri
+          readOnly: true
+          description: Short-lived signed URL to the stored file (derived from `file_path`).
+        extraction_status:
+          type: string
+          enum: [pending, success, failed, reviewed]
+        body_fat_percentage:
+          type: number
+          nullable: true
+        muscle_mass:
+          type: number
+          nullable: true
+        visceral_fat_level:
+          type: number
+          nullable: true
+        basal_metabolic_rate:
+          type: number
+          nullable: true
+        extraction_error:
+          type: string
+          nullable: true
+        reviewed_by_dietitian:
+          type: boolean
+        reviewed_by_user_id:
+          type: string
+          nullable: true
+        reviewed_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    BodyCompositionReviewRequest:
+      type: object
+      required: [body_fat_percentage, muscle_mass, visceral_fat_level, basal_metabolic_rate]
+      properties:
+        body_fat_percentage:
+          type: number
+          minimum: 0
+          maximum: 100
+        muscle_mass:
+          type: number
+          minimum: 0
+          description: Kilograms.
+        visceral_fat_level:
+          type: number
+          minimum: 0
+        basal_metabolic_rate:
+          type: number
+          minimum: 0
+          description: kcal/day.
+
+    # Appointments
+
+    AppointmentStatus:
+      type: string
+      enum: [pending, confirmed, completed, cancelled, rescheduled]
+
+    RecurrencePattern:
+      type: string
+      enum: [none, weekly, biweekly]
+
+    Appointment:
+      type: object
+      required: [id, patient_id, appointment_date, start_time, end_time, status]
+      properties:
+        id:
+          type: string
+          readOnly: true
+        patient_id:
+          type: string
+        patient_name:
+          type: string
+          readOnly: true
+        slot_id:
+          type: string
+          nullable: true
+        appointment_date:
+          type: string
+          format: date
+        start_time:
+          $ref: '#/components/schemas/Time'
+        end_time:
+          $ref: '#/components/schemas/Time'
+        status:
+          $ref: '#/components/schemas/AppointmentStatus'
+        is_recurring:
+          type: boolean
+        recurrence_pattern:
+          $ref: '#/components/schemas/RecurrencePattern'
+        parent_appointment_id:
+          type: string
+          nullable: true
+        cancellation_reason:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    AppointmentCreateRequest:
+      type: object
+      required: [appointment_date, start_time]
+      properties:
+        appointment_date:
+          type: string
+          format: date
+        start_time:
+          $ref: '#/components/schemas/Time'
+        is_recurring:
+          type: boolean
+          default: false
+        recurrence_pattern:
+          $ref: '#/components/schemas/RecurrencePattern'
+        occurrences:
+          type: integer
+          minimum: 2
+          maximum: 26
+          description: Total appointments in the series. Required when `is_recurring` is true.
+
+    FollowUpCreateRequest:
+      allOf:
+        - type: object
+          required: [patient_id]
+          properties:
+            patient_id:
+              type: string
+        - $ref: '#/components/schemas/AppointmentCreateRequest'
+
+    AppointmentBookingResult:
+      type: object
+      required: [appointments]
+      properties:
+        appointments:
+          type: array
+          description: The booked appointment, or every appointment in the recurring series (parent first).
+          items:
+            $ref: '#/components/schemas/Appointment'
+        skipped_dates:
+          type: array
+          description: Recurring dates that could not be booked because no slot was available.
+          items:
+            type: string
+            format: date
+
+    AppointmentCancelRequest:
+      type: object
+      properties:
+        cancellation_reason:
+          type: string
+          maxLength: 1000
+        cancel_series:
+          type: boolean
+          default: false
+          description: For a recurring appointment, also cancel all later appointments in the series.
+
+    AppointmentRescheduleRequest:
+      type: object
+      required: [appointment_date, start_time]
+      properties:
+        appointment_date:
+          type: string
+          format: date
+        start_time:
+          $ref: '#/components/schemas/Time'
+
+    AppointmentList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Appointment'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    # Slots & settings
+
+    AvailableSlot:
+      type: object
+      required: [slot_id, date, start_time, end_time]
+      properties:
+        slot_id:
+          type: string
+        date:
+          type: string
+          format: date
+        start_time:
+          $ref: '#/components/schemas/Time'
+        end_time:
+          $ref: '#/components/schemas/Time'
+
+    AppointmentSlot:
+      type: object
+      required: [id, date, start_time, end_time, is_booked]
+      properties:
+        id:
+          type: string
+          readOnly: true
+        date:
+          type: string
+          format: date
+        start_time:
+          $ref: '#/components/schemas/Time'
+        end_time:
+          $ref: '#/components/schemas/Time'
+        is_booked:
+          type: boolean
+          readOnly: true
+        appointment_id:
+          type: string
+          nullable: true
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    AppointmentSlotCreateRequest:
+      type: object
+      required: [date, start_time]
+      properties:
+        date:
+          type: string
+          format: date
+        start_time:
+          $ref: '#/components/schemas/Time'
+        end_time:
+          $ref: '#/components/schemas/Time'
+
+    AppointmentSlotUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        date:
+          type: string
+          format: date
+        start_time:
+          $ref: '#/components/schemas/Time'
+        end_time:
+          $ref: '#/components/schemas/Time'
+
+    AppointmentSlotList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppointmentSlot'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    AppointmentSettings:
+      type: object
+      required: [appointment_duration, buffer_time]
+      properties:
+        appointment_duration:
+          type: integer
+          minimum: 5
+          maximum: 240
+          description: Duration in minutes
+        buffer_time:
+          type: integer
+          minimum: 0
+          maximum: 120
+          description: Buffer in minutes
+
+    # Statistics
+
+    DashboardStatistics:
+      type: object
+      required:
+        - total_booked_clients
+        - chronic_condition_patients
+        - chronic_condition_percentage
+        - obese_patients
+        - obese_patient_percentage
+      properties:
+        total_booked_clients:
+          type: integer
+          description: Distinct patients with at least one non-cancelled appointment.
+        chronic_condition_patients:
+          type: integer
+          description: Patients whose latest health record lists at least one chronic condition.
+        chronic_condition_percentage:
+          type: number
+          description: chronic_condition_patients / total patients with a health record × 100, 1 decimal.
+        obese_patients:
+          type: integer
+          description: Patients whose latest health record has `is_obese` = true.
+        obese_patient_percentage:
+          type: number
+          description: obese_patients / total patients with a health record × 100, 1 decimal.
+
+    # Content
+
+    Page:
+      type: object
+      required: [id, slug, title, language]
+      properties:
+        id:
+          type: string
+          readOnly: true
+        slug:
+          type: string
+          example: how-it-works
+        title:
+          type: string
+        language:
+          $ref: '#/components/schemas/Language'
+        sections:
+          type: array
+          readOnly: true
+          items:
+            $ref: '#/components/schemas/PageSection'
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    PageUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        slug:
+          type: string
+          pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+
+    PageSection:
+      type: object
+      required: [id, page_id, section_key, content, display_order]
+      properties:
+        id:
+          type: string
+          readOnly: true
+        page_id:
+          type: string
+          readOnly: true
+        section_key:
+          type: string
+          example: hero
+        content:
+          type: object
+          additionalProperties: true
+          description: Free-form section content (headings, text, images, CTA links).
+          example:
+            heading: Eat well, live well
+            body: Personalised nutrition plans for every goal.
+            image_url: /media/hero.jpg
+        display_order:
+          type: integer
+          minimum: 0
+
+    PageSectionCreateRequest:
+      type: object
+      required: [section_key, content]
+      properties:
+        section_key:
+          type: string
+          pattern: '^[a-z0-9_]+$'
+        content:
+          type: object
+          additionalProperties: true
+        display_order:
+          type: integer
+          minimum: 0
+          description: Defaults to the end of the page.
+
+    PageSectionUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        section_key:
+          type: string
+          pattern: '^[a-z0-9_]+$'
+        content:
+          type: object
+          additionalProperties: true
+        display_order:
+          type: integer
+          minimum: 0
+
+    HealthTip:
+      type: object
+      required: [id, title, content, language, is_published]
+      properties:
+        id:
+          type: string
+          readOnly: true
+        section_id:
+          type: string
+          nullable: true
+        title:
+          type: string
+        content:
+          type: string
+        language:
+          $ref: '#/components/schemas/Language'
+        is_published:
+          type: boolean
+        published_at:
+          type: string
+          format: date-time
+          nullable: true
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    HealthTipCreateRequest:
+      type: object
+      required: [title, content, language]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        content:
+          type: string
+          minLength: 1
+        language:
+          $ref: '#/components/schemas/Language'
+        section_id:
+          type: string
+        is_published:
+          type: boolean
+          default: false
+
+    HealthTipUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        content:
+          type: string
+          minLength: 1
+        language:
+          $ref: '#/components/schemas/Language'
+        section_id:
+          type: string
+          nullable: true
+        is_published:
+          type: boolean
+
+    HealthTipList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthTip'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    # Contact
+
+    ContactSubmissionStatus:
+      type: string
+      enum: [unread, read, replied, archived]
+
+    ContactSubmissionCreateRequest:
+      type: object
+      required: [full_name, email, message]
+      properties:
+        full_name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        subject:
+          type: string
+          maxLength: 200
+        message:
+          type: string
+          minLength: 1
+          maxLength: 5000
+
+    ContactSubmission:
+      type: object
+      required: [id, full_name, email, message, status, submitted_at]
+      properties:
+        id:
+          type: string
+          readOnly: true
+        full_name:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+          nullable: true
+        subject:
+          type: string
+          nullable: true
+        message:
+          type: string
+        status:
+          $ref: '#/components/schemas/ContactSubmissionStatus'
+        submitted_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    ContactSubmissionStatusUpdateRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/ContactSubmissionStatus'
+
+    ContactSubmissionList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContactSubmission'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    # Notifications
+
+    Notification:
+      type: object
+      required: [id, appointment_id, channel, notification_type, status]
+      properties:
+        id:
+          type: string
+          readOnly: true
+        appointment_id:
+          type: string
+        channel:
+          type: string
+          enum: [whatsapp, email]
+        notification_type:
+          type: string
+          enum: [confirmation, reminder, cancellation, reschedule]
+        scheduled_at:
+          type: string
+          format: date-time
+          nullable: true
+        sent_at:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+          enum: [pending, sent, failed]
+        error_message:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    NotificationList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
