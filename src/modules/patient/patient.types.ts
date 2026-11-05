@@ -2,6 +2,90 @@ import { z } from "zod";
 import { Gender } from "@/app/generated/prisma/enums";
 import { Prisma } from "@/app/generated/prisma/client";
 
+export const PatientCreateSchema = z
+  .object({
+    full_name: z.string().trim().min(2).max(100),
+    email: z.string().email(),
+    phone: z.string().regex(/^\+[1-9]\d{7,14}$/, "Use E.164 format, e.g. +96170123456"),
+    date_of_birth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD format."),
+    gender: z.enum(Gender),
+    note: z.string().max(2000),
+    whatsapp_opt_in: z.boolean(),
+    ai_processing_consent: z.boolean(),
+    health_record: z.object({
+      recorded_at: z.iso.datetime().optional(),
+      height: z.number().min(50).max(250),
+      weight: z.number().min(2).max(400),
+      chronic_conditions: z.array(z.string().max(100)).default([]),
+      allergies: z.array(z.string().max(100)).default([]),
+      dietitian_goal: z.string().max(2000).optional(),
+    }),
+  })
+  .transform((data) => ({
+    fullName: data.full_name,
+    email: data.email,
+    phone: data.phone,
+    dateOfBirth: data.date_of_birth,
+    gender: data.gender,
+    note: data.note,
+    whatsappOptIn: data.whatsapp_opt_in,
+    aiProcessingConsent: data.ai_processing_consent,
+    healthRecord: {
+      recordedAt: data.health_record.recorded_at ? new Date(data.health_record.recorded_at) : undefined,
+      height: data.health_record.height,
+      weight: data.health_record.weight,
+      chronicConditions: data.health_record.chronic_conditions,
+      allergies: data.health_record.allergies,
+      dietitianGoal: data.health_record.dietitian_goal,
+    },
+  }));
+
+export type PatientCreateInput = z.infer<typeof PatientCreateSchema>;
+
+export const PatientUpdateSchema = z
+  .object({
+    full_name: z.string().trim().min(2).max(100),
+    email: z.string().email(),
+    phone: z.string().regex(/^\+[1-9]\d{7,14}$/, "Use E.164 format, e.g. +96170123456"),
+    date_of_birth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD format."),
+    gender: z.enum(Gender),
+    note: z.string().max(2000),
+    whatsapp_opt_in: z.boolean(),
+    ai_processing_consent: z.boolean(),
+    health_record: z.object({
+      recorded_at: z.iso.datetime().optional(),
+      height: z.number().min(50).max(250),
+      weight: z.number().min(2).max(400),
+      chronic_conditions: z.array(z.string().max(100)).default([]),
+      allergies: z.array(z.string().max(100)).default([]),
+      dietitian_goal: z.string().max(2000).optional(),
+    }),
+  })
+  .partial()
+  .refine((data) => Object.values(data).some((value) => value !== undefined), {
+    message: "At least one field is required.",
+  })
+  .transform((data) => ({
+    fullName: data.full_name,
+    email: data.email,
+    phone: data.phone,
+    dateOfBirth: data.date_of_birth,
+    gender: data.gender,
+    note: data.note,
+    whatsappOptIn: data.whatsapp_opt_in,
+    aiProcessingConsent: data.ai_processing_consent,
+    healthRecord: {
+      recordedAt:data.health_record && data.health_record.recorded_at ? new Date(data.health_record.recorded_at) : undefined,
+      height:data.health_record && data.health_record.height,
+      weight:data.health_record && data.health_record.weight,
+      chronicConditions: data.health_record && data.health_record.chronic_conditions,
+      allergies: data.health_record && data.health_record.allergies,
+      dietitianGoal: data.health_record && data.health_record.dietitian_goal,
+    },
+  }));
+
+export type PatientUpdateInput = z.infer<typeof PatientUpdateSchema>;
+
 export const PatientSelfUpdateSchema = z
   .object({
     full_name: z.string().trim().min(2).max(100),

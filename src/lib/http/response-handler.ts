@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { AppError } from "@/lib/errors";
+import { Prisma } from "@/app/generated/prisma/client";
 
 export type ErrorDetail = { field: string; message: string };
 export type Pagination = { page: number; page_size: number; total_items: number; total_pages: number };
@@ -76,8 +77,16 @@ export class NextResponseHandler implements IResponseHandler {
   // concrete error class a module throws. ──
   fromError(error: unknown): NextResponse {
     if (error instanceof AppError) {
-      return this.fail(error.status, error.code, error.message, error.details);
+        return this.fail(error.status, error.code, error.message, error.details);
     }
+
+    if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+    ) {
+        return this.conflict("A record with this value already exists.");
+    }
+
     return this.serverError(error);
-  }
+}
 }

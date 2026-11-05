@@ -5,9 +5,12 @@ import {
   PatientSelfUpdateInput,
   SafeHealthRecord,
   SafePatient,
+  PatientCreateInput,
+  PatientUpdateInput
 } from "./patient.types";
 import { toSafeHealthRecord, toSafePatient } from "./patient.mapper";
 import { NotFoundError } from "@/lib/errors";
+import { ListQuery } from "@/lib/listQuery";
 
 export class PatientService {
   async getProfile(userId: string): Promise<SafePatient> {
@@ -50,5 +53,20 @@ export class PatientService {
   async updateHealthRecord(patientId: string, recordId: string, input: HealthRecordUpdateInput): Promise<SafeHealthRecord> {
     const record = await PatientRepository.updateHealthRecord(patientId, recordId, input);
     return toSafeHealthRecord(record);
+  }
+
+  async listPatients(query:ListQuery) {
+    const { records, total } = await PatientRepository.listPatients(query);
+    return { records, pagination: query.toPagination(total) };
+  }
+
+  async createFullPatient(userId: string, data: PatientCreateInput): Promise<SafePatient> {
+    const patient = await PatientRepository.createFullPatient(userId, data);
+    return toSafePatient(patient);
+  }
+
+  async updateFullPatient(userId: string, input: PatientUpdateInput): Promise<SafePatient> {
+    const patient = await PatientRepository.updateFullPatient(userId, input);
+    return toSafePatient(patient);
   }
 }
