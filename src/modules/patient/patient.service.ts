@@ -60,6 +60,8 @@ export class PatientService {
     return { records, pagination: query.toPagination(total) };
   }
 
+  // Admin: create a new patient (and associated user) from scratch, update or delete an existing patient. These methods are not intended for patients to call themselves.
+
   async createFullPatient(userId: string, data: PatientCreateInput): Promise<SafePatient> {
     const patient = await PatientRepository.createFullPatient(userId, data);
     return toSafePatient(patient);
@@ -68,5 +70,9 @@ export class PatientService {
   async updateFullPatient(userId: string, input: PatientUpdateInput): Promise<SafePatient> {
     const patient = await PatientRepository.updateFullPatient(userId, input);
     return toSafePatient(patient);
+  }
+
+  async deletePatient(patientId: string): Promise<void> {
+    await PatientRepository.deletePatient(patientId);
   }
 }
