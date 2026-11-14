@@ -37,6 +37,14 @@ export class ForbiddenError extends AppError {
   }
 }
 
+export class BadRequestError extends AppError {
+  readonly status = 400;
+  readonly code = "BadRequest";
+  constructor(message = "You do not have an error in you input") {
+    super(message);
+  }
+}
+
 export class NotFoundError extends AppError {
   readonly status = 404;
   readonly code = "NOT_FOUND";
